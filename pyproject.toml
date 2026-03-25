@@ -1,0 +1,32 @@
+[project]
+name = "image-segmentation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "choiwinner", email = "babyrain@naver.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "koreanize-matplotlib>=0.1.1",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.3",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.1.1",
+    "sam2>=1.1.0",
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
