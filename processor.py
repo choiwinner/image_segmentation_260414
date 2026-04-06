@@ -43,7 +43,8 @@ class ImageAligner:
 
 class MarkDetector:
     """SAM2를 사용하여 Contact Mark를 검출하는 클래스"""
-    def __init__(self, model_cfg="sam2_hiera_l.yaml", checkpoint="sam2_hiera_large.pt"):
+    #def __init__(self, model_cfg="sam2_hiera_l.yaml", checkpoint="sam2_hiera_large.pt"):
+    def __init__(self, model_cfg="sam2_hiera_b+.yaml", checkpoint="sam2_hiera_base_plus.pt"):
         # 장치 선택: CUDA가 가능하면 사용, 아니면 CPU
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
