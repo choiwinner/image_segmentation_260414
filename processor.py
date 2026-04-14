@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 import matplotlib.pyplot as plt
 import koreanize_matplotlib
 
@@ -43,8 +44,7 @@ class ImageAligner:
 
 class MarkDetector:
     """SAM2를 사용하여 Contact Mark를 검출하는 클래스"""
-    #def __init__(self, model_cfg="sam2_hiera_l.yaml", checkpoint="sam2_hiera_large.pt"):
-    def __init__(self, model_cfg="sam2_hiera_b+.yaml", checkpoint="sam2_hiera_base_plus.pt"):
+    def __init__(self, model_cfg="sam2.1_hiera_b+.yaml", checkpoint="sam2.1_hiera_base_plus.pt"):
         # 장치 선택: CUDA가 가능하면 사용, 아니면 CPU
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -58,12 +58,20 @@ class MarkDetector:
         
         # 모델 로드
         try:
+            # 설정 파일과 체크포인트의 절대 경로 확보
+            import os
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            full_model_cfg = os.path.join(base_path, model_cfg) if not os.path.isabs(model_cfg) else model_cfg
+            full_checkpoint = os.path.join(base_path, checkpoint) if not os.path.isabs(checkpoint) else checkpoint
+            
             # SAM2 모델 빌드 및 장치 할당
-            self.sam2 = build_sam2(model_cfg, checkpoint, device=self.device, apply_postprocessing=True)
+            self.sam2 = build_sam2(full_model_cfg, full_checkpoint, device=self.device, apply_postprocessing=True)
             self.mask_generator = SAM2AutomaticMaskGenerator(self.sam2)
+            self.predictor = SAM2ImagePredictor(self.sam2)
         except Exception as e:
             print(f"SAM2 모델 로드 실패: {e}")
             self.mask_generator = None
+            self.predictor = None
 
     def get_masks(self, image):
         if self.mask_generator is None:
@@ -85,10 +93,53 @@ class MarkDetector:
                 
         return masks
 
+    def get_masks_from_points(self, image, points):
+        """특정 점(Point Prompt)을 기반으로 마스크를 생성함"""
+        if self.predictor is None:
+            return []
+            
+        if len(image.shape) == 2:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        else:
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+        self.predictor.set_image(image_rgb)
+        
+        input_points = np.array(points)
+        input_labels = np.ones(len(points)) # 모두 Positive prompt
+        
+        if self.device.type == "cuda":
+            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                masks, scores, logits = self.predictor.predict(
+                    point_coords=input_points,
+                    point_labels=input_labels,
+                    multimask_output=False
+                )
+        else:
+            with torch.inference_mode():
+                masks, scores, logits = self.predictor.predict(
+                    point_coords=input_points,
+                    point_labels=input_labels,
+                    multimask_output=False
+                )
+        
+        # 결과를 SAM2AutomaticMaskGenerator 형식과 유사하게 변환
+        formatted_masks = []
+        for i, mask in enumerate(masks):
+            formatted_masks.append({
+                'segmentation': mask,
+                'area': np.sum(mask),
+                'predicted_iou': scores[i],
+                'point_coords': [points[i]]
+            })
+        return formatted_masks
+
 class ChangeAnalyzer:
     """전후 마스크를 비교하여 새로운 마크를 찾는 클래스"""
-    def __init__(self, iou_threshold=0.3):
+    def __init__(self, iou_threshold=0.3, diff_threshold=30, min_area=20):
         self.iou_threshold = iou_threshold
+        self.diff_threshold = diff_threshold
+        self.min_area = min_area
 
     def compute_iou(self, mask1, mask2):
         intersection = np.logical_and(mask1, mask2).sum()
@@ -117,6 +168,98 @@ class ChangeAnalyzer:
                 new_mark_indices.append(i)
         
         return [new_masks[idx] for idx in new_mark_indices]
+
+    def get_difference_candidates(self, img_before, img_after):
+        """이미지 차분을 통해 변화가 발생한 후보 영역의 중심점들을 추출함"""
+        # 그레이스케일 변환
+        if len(img_before.shape) == 3:
+            gray_before = cv2.cvtColor(img_before, cv2.COLOR_BGR2GRAY)
+            gray_after = cv2.cvtColor(img_after, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_before = img_before
+            gray_after = img_after
+            
+        # 노이즈 억제를 위해 약간의 블러링
+        gray_before = cv2.GaussianBlur(gray_before, (5, 5), 0)
+        gray_after = cv2.GaussianBlur(gray_after, (5, 5), 0)
+        
+        # 차분 계산
+        diff = cv2.absdiff(gray_before, gray_after)
+        _, thresh = cv2.threshold(diff, self.diff_threshold, 255, cv2.THRESH_BINARY)
+        
+        # 모폴로지 연산으로 작은 노이즈 제거 및 인접 영역 병합
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        
+        # 레이블링을 통해 후보 영역 추출
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh)
+        
+        candidates = []
+        for i in range(1, num_labels): # 0번은 배경
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area >= self.min_area:
+                candidates.append(centroids[i])
+                
+        return candidates
+
+    def find_new_marks_refined(self, img_before, img_after, old_masks, detector):
+        """개선된 차분 기반 신규 마크 검출 로직"""
+        # 1. 차분을 통한 후보지 추출
+        candidates = self.get_difference_candidates(img_before, img_after)
+        if not candidates:
+            return []
+            
+        # 2. 각 후보지에 대해 정밀 마스크 추출 (Prompt 기반)
+        refined_new_marks = []
+        
+        for point in candidates:
+            # 해당 점을 중심으로 SAM2 마스크 생성
+            masks = detector.get_masks_from_points(img_after, [point])
+            if not masks:
+                continue
+                
+            n_mask = masks[0]
+            n_seg = n_mask['segmentation']
+            
+            # 3. 기존 마스크들과 비교 (기존 마스크와 겹치더라도 '새로운 영역'의 비율이 높으면 신규로 간주)
+            is_new = True
+            for o_mask in old_masks:
+                o_seg = o_mask['segmentation']
+                
+                # IoU 계산
+                intersection = np.logical_and(n_seg, o_seg).sum()
+                union = np.logical_or(n_seg, o_seg).sum()
+                iou = intersection / union if union > 0 else 0
+                
+                # 만약 기존 마스크와 거의 완벽하게 겹친다면(IoU가 매우 높음) 기존 마스크로 판정
+                if iou > 0.7: # 기존보다 엄격한 기준
+                    is_new = False
+                    break
+                
+                # 단순히 겹치는 정도가 아니라, 새 마스크 면적의 대부분이 기존 마스크에 포함되는지 확인
+                overlap_ratio = intersection / n_mask['area'] if n_mask['area'] > 0 else 0
+                
+                # 면적 비율 확인: 새 마스크와 기존 마스크의 크기가 비슷할 때만 동일 마크로 간주
+                # (큰 배경 마스크 안에 작은 신규 마크가 들어온 경우를 허용하기 위함)
+                size_ratio = n_mask['area'] / o_mask['area'] if o_mask['area'] > 0 else 0
+                
+                # 80% 이상 겹치고, 크기 차이가 크지 않다면(예: 기존이 새것의 5배 이내) 기존 마크로 판단
+                if overlap_ratio > 0.8 and size_ratio > 0.2: 
+                    is_new = False
+                    break
+
+            if is_new:
+                # 중복 추가 방지 (이미 추가된 마스크와 많이 겹치는지 확인)
+                duplicate = False
+                for r_mask in refined_new_marks:
+                    if self.compute_iou(n_seg, r_mask['segmentation']) > 0.5:
+                        duplicate = True
+                        break
+                if not duplicate:
+                    refined_new_marks.append(n_mask)
+        
+        return refined_new_marks
 
 def visualize_results(img_before, img_after, new_marks, rect=None, sub_rect=None, is_pass=None):
     """결과 시각화"""
@@ -154,7 +297,7 @@ def visualize_results(img_before, img_after, new_marks, rect=None, sub_rect=None
     res_img = img_after.copy()
     # 새로운 마크를 빨간색으로 오버레이
     for mask in new_marks:
-        m = mask['segmentation']
+        m = mask['segmentation'].astype(bool)
         res_img[m] = [0, 0, 255] # BGR format for Red
         
     res_img_rgb = cv2.cvtColor(res_img, cv2.COLOR_BGR2RGB)

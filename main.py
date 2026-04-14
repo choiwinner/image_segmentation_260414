@@ -66,9 +66,13 @@ def main():
     
     if detector.mask_generator is None:
         print("\n[!] SAM2 체크포인트가 없어 실제 모델 실행은 생략하고 Mock 결과를 사용합니다.")
-        mock_mask = np.zeros((500, 500), dtype=bool)
-        cv2.circle(mock_mask.view(np.uint8), (200, 400), 16, 1, -1)
-        new_marks = [{'segmentation': mock_mask}]
+        # 실제 이미지 크기에 맞게 Mock 마스크 생성
+        h, w = img_before.shape[:2]
+        mock_mask = np.zeros((h, w), dtype=bool)
+        # 이미지 크기에 비례한 위치에 마크 시뮬레이션
+        cy, cx = h // 2, w // 2
+        cv2.circle(mock_mask.view(np.uint8), (cx, cy), min(h, w) // 10, 1, -1)
+        new_marks = [{'segmentation': mock_mask, 'area': np.sum(mock_mask)}]
         end_detect = time.perf_counter()
     else:
         masks_before = detector.get_masks(img_before)
@@ -79,7 +83,7 @@ def main():
         print("신규 Mark 분석 중...")
         start_analysis = time.perf_counter()
         analyzer = ChangeAnalyzer()
-        new_marks = analyzer.find_new_marks(masks_before, masks_after)
+        new_marks = analyzer.find_new_marks_refined(img_before, img_after_aligned, masks_before, detector)
         end_analysis = time.perf_counter()
         print(f"  > 분석 소요 시간: {end_analysis - start_analysis:.4f}초")
     
