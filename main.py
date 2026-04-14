@@ -80,9 +80,27 @@ def main():
         end_detect = time.perf_counter()
         
         # 4. 차이 분석
+        print("\n" + "="*40)
+        print("신규 Mark 분석 설정 (Enter 입력 시 기본값 사용)")
+        
+        def get_input(prompt, default_val):
+            user_val = input(f"  > {prompt} (기본값 {default_val}): ").strip()
+            if not user_val:
+                return default_val
+            try:
+                return type(default_val)(user_val)
+            except ValueError:
+                print(f"    [!] 잘못된 입력입니다. 기본값 {default_val}을 사용합니다.")
+                return default_val
+
+        diff_th = get_input("차분 임계값 (diff_threshold, 0~255)", 30)
+        min_a = get_input("최소 면적 (min_area)", 20)
+        overlap_th = get_input("겹침 허용 비율 (overlap_threshold, 0.0~1.0)", 0.8)
+        print("-" * 40)
+        
         print("신규 Mark 분석 중...")
         start_analysis = time.perf_counter()
-        analyzer = ChangeAnalyzer()
+        analyzer = ChangeAnalyzer(diff_threshold=diff_th, min_area=min_a, overlap_threshold=overlap_th)
         new_marks = analyzer.find_new_marks_refined(img_before, img_after_aligned, masks_before, detector)
         end_analysis = time.perf_counter()
         print(f"  > 분석 소요 시간: {end_analysis - start_analysis:.4f}초")

@@ -136,10 +136,16 @@ class MarkDetector:
 
 class ChangeAnalyzer:
     """전후 마스크를 비교하여 새로운 마크를 찾는 클래스"""
-    def __init__(self, iou_threshold=0.3, diff_threshold=30, min_area=20):
+    def __init__(self, iou_threshold=0.3, diff_threshold=30, min_area=20, 
+                 overlap_threshold=0.8, size_ratio_threshold=0.2, 
+                 strict_iou_threshold=0.7, duplicate_threshold=0.5):
         self.iou_threshold = iou_threshold
         self.diff_threshold = diff_threshold
         self.min_area = min_area
+        self.overlap_threshold = overlap_threshold
+        self.size_ratio_threshold = size_ratio_threshold
+        self.strict_iou_threshold = strict_iou_threshold
+        self.duplicate_threshold = duplicate_threshold
 
     def compute_iou(self, mask1, mask2):
         intersection = np.logical_and(mask1, mask2).sum()
@@ -201,12 +207,12 @@ class ChangeAnalyzer:
             if area >= self.min_area:
                 candidates.append(centroids[i])
                 
-        return candidates
+        return candidates, thresh
 
     def find_new_marks_refined(self, img_before, img_after, old_masks, detector):
         """개선된 차분 기반 신규 마크 검출 로직"""
-        # 1. 차분을 통한 후보지 추출
-        candidates = self.get_difference_candidates(img_before, img_after)
+        # 1. 차분을 통한 후보지 추출 (차분 맵도 함께 확보)
+        candidates, thresh_map = self.get_difference_candidates(img_before, img_after)
         if not candidates:
             return []
             
@@ -222,6 +228,26 @@ class ChangeAnalyzer:
             n_mask = masks[0]
             n_seg = n_mask['segmentation']
             
+            # 2.5 마스크를 '순수 변화 영역'으로 정제 (SAM2 마스크 ∩ 차분 맵)
+            # 이렇게 하면 기존 마크와 겹치더라도 '새로 추가된 픽셀'만 빨간색으로 표시됨
+            n_seg_refined = np.logical_and(n_seg, thresh_map > 0)
+            refined_area = int(n_seg_refined.sum())
+            
+            # 정제 후 면적이 너무 작으면 (노이즈) 무시
+            if refined_area < self.min_area:
+                continue
+            
+            # 변화 비율이 10% 미만이면 기존 마크로 판정
+            change_ratio = refined_area / n_mask['area'] if n_mask['area'] > 0 else 0
+            if change_ratio < 0.10:
+                continue
+            
+            # 마스크 데이터를 정제된 버전으로 교체 (이 단계가 핵심)
+            n_mask = dict(n_mask)  # 원본 참조 보호를 위해 복사
+            n_mask['segmentation'] = n_seg_refined
+            n_mask['area'] = refined_area
+            n_seg = n_seg_refined  # 이후 IoU 계산에도 정제 버전 사용
+            
             # 3. 기존 마스크들과 비교 (기존 마스크와 겹치더라도 '새로운 영역'의 비율이 높으면 신규로 간주)
             is_new = True
             for o_mask in old_masks:
@@ -233,7 +259,7 @@ class ChangeAnalyzer:
                 iou = intersection / union if union > 0 else 0
                 
                 # 만약 기존 마스크와 거의 완벽하게 겹친다면(IoU가 매우 높음) 기존 마스크로 판정
-                if iou > 0.7: # 기존보다 엄격한 기준
+                if iou > self.strict_iou_threshold: 
                     is_new = False
                     break
                 
@@ -244,8 +270,8 @@ class ChangeAnalyzer:
                 # (큰 배경 마스크 안에 작은 신규 마크가 들어온 경우를 허용하기 위함)
                 size_ratio = n_mask['area'] / o_mask['area'] if o_mask['area'] > 0 else 0
                 
-                # 80% 이상 겹치고, 크기 차이가 크지 않다면(예: 기존이 새것의 5배 이내) 기존 마크로 판단
-                if overlap_ratio > 0.8 and size_ratio > 0.2: 
+                # 임계값 이상 겹치고, 크기 차이가 크지 않다면 기존 마크로 판단
+                if overlap_ratio > self.overlap_threshold and size_ratio > self.size_ratio_threshold: 
                     is_new = False
                     break
 
@@ -253,7 +279,7 @@ class ChangeAnalyzer:
                 # 중복 추가 방지 (이미 추가된 마스크와 많이 겹치는지 확인)
                 duplicate = False
                 for r_mask in refined_new_marks:
-                    if self.compute_iou(n_seg, r_mask['segmentation']) > 0.5:
+                    if self.compute_iou(n_seg, r_mask['segmentation']) > self.duplicate_threshold:
                         duplicate = True
                         break
                 if not duplicate:
