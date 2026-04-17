@@ -221,6 +221,67 @@ def select_multiple_rectangles_manually(image, n=2):
     cv2.destroyAllWindows()
     return all_rects
 
+import json
+import os
+
+def collect_interactive_prompts(image):
+    """사용자가 마우스로 Positive(좌클릭) 및 Negative(우클릭) 점을 선택하도록 함"""
+    clone = image.copy()
+    points = []
+    labels = [] # 1: Positive (Mark), 0: Negative (Background)
+
+    def mouse_callback(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            points.append((x, y))
+            labels.append(1)
+            cv2.circle(clone, (x, y), 5, (0, 0, 255), -1) # Red for Positive
+            cv2.putText(clone, "P", (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            cv2.imshow("Select Prompts (L:Mark, R:BG)", clone)
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            points.append((x, y))
+            labels.append(0)
+            cv2.circle(clone, (x, y), 5, (255, 0, 0), -1) # Blue for Negative
+            cv2.putText(clone, "N", (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            cv2.imshow("Select Prompts (L:Mark, R:BG)", clone)
+
+    win_name = "Select Prompts (L:Mark, R:BG)"
+    cv2.namedWindow(win_name)
+    cv2.setMouseCallback(win_name, mouse_callback)
+    cv2.imshow(win_name, clone)
+    
+    print("-" * 40)
+    print("마크(검은색)는 **좌클릭(P)**, 배경(금색)은 **우클릭(N)** 해주세요.")
+    print("선택 완료 후, **이미지 창에서** Enter 또는 'q'를 눌러 종료하세요.")
+    print("-" * 40)
+    
+    while True:
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 13:
+            break
+        if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    cv2.destroyWindow(win_name)
+    return points, labels
+
+def save_prompts(points, labels, filename="prompts.json"):
+    """선택한 프롬프트 점과 라벨을 JSON 파일로 저장"""
+    data = {
+        "points": points,
+        "labels": labels
+    }
+    with open(filename, 'w') as f:
+        json.dump(data, f)
+    print(f"[정보] 프롬프트가 {filename}에 저장되었습니다.")
+
+def load_prompts(filename="prompts.json"):
+    """저장된 프롬프트 데이터를 로드"""
+    if not os.path.exists(filename):
+        return None, None
+    with open(filename, 'r') as f:
+        data = json.load(f)
+    return data["points"], data["labels"]
+
 def visualize_dual_results(img_before, img_after, roi_results):
     """두 개의 영역에 대한 독립적인 판정 결과를 시각화"""
     plt.figure(figsize=(18, 6))

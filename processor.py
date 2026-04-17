@@ -93,8 +93,8 @@ class MarkDetector:
                 
         return masks
 
-    def get_masks_from_points(self, image, points):
-        """특정 점(Point Prompt)을 기반으로 마스크를 생성함"""
+    def get_masks_from_points(self, image, points, labels=None):
+        """특정 점(Point Prompt) 및 라벨(Positive/Negative)을 기반으로 마스크를 생성함"""
         if self.predictor is None:
             return []
             
@@ -106,7 +106,10 @@ class MarkDetector:
         self.predictor.set_image(image_rgb)
         
         input_points = np.array(points)
-        input_labels = np.ones(len(points)) # 모두 Positive prompt
+        if labels is None:
+            input_labels = np.ones(len(points)) # 모두 Positive prompt
+        else:
+            input_labels = np.array(labels)
         
         if self.device.type == "cuda":
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
