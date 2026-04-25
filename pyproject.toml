@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=2.4.3",
     "opencv-python>=4.13.0.92",
     "pillow>=12.1.1",
+    "pyside6>=6.11.0",
     "sam2>=1.1.0",
     "torch==2.5.1",
     "torchvision==0.20.1",
