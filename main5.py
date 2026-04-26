@@ -7,7 +7,8 @@ main5.py — 노이즈 제거 preprocessing + ROI 제한 마크 검출 통합 �
 """
 
 import matplotlib
-matplotlib.use('QtAgg') 
+# matplotlib.use('QtAgg')  # 기존 설정: Qt 라이브러리(PySide6 등)가 필요한 백엔드
+matplotlib.use('TkAgg')    # 변경 설정: Qt 관련 DLL 로드 오류(ImportError)를 해결하기 위해 안정적인 TkAgg 백엔드 사용
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -80,19 +81,30 @@ def main():
     aligner = ImageAligner()
     img_after_aligned, _ = aligner.align(img_before, img_after)
     
-    # ── 3. [NEW] 소형 노이즈 제거 전처리 ──
-    print("\n[2/8] 소형 노이즈 제거 전처리 (선택 사항)...")
-    img_before, img_after_aligned = ask_user_noise_removal(img_before, img_after_aligned)
+    # ── 3. 사각형 영역(ROI) 검출 (노이즈 제거 확인을 위해 앞당김) ──
+    print("\n[2/8] 사각형 영역(ROI) 검출...")
+    rois = find_top_rectangles(img_after_aligned, n=2)
+    if not rois or len(rois) < 2:
+        print("  [!] 2개의 사각형을 자동으로 찾지 못했습니다. 수동 선택을 실행합니다.")
+        rois = select_multiple_rectangles_manually(img_after_aligned, n=2)
+    
+    if not rois or len(rois) < 2:
+        print("[에러] ROI가 정상적으로 설정되지 않았습니다.")
+        return
+
+    # ── 4. [NEW] 소형 노이즈 제거 전처리 (ROI 내부만 집중 확인) ──
+    print("\n[3/8] 소형 노이즈 제거 전처리 (사용자 피드백 기반)...")
+    img_before, img_after_aligned = ask_user_noise_removal(img_before, img_after_aligned, rois)
     
     # ROI 검출 및 분석을 위한 원본 정합 이미지 보관
     img_after_for_roi = img_after_aligned.copy()
 
-    # ── 4. 이미지 추가 전처리 ──
-    print("\n[3/8] 이미지 대비 전처리 (선택 사항)...")
+    # ── 5. 이미지 추가 전처리 ──
+    print("\n[4/8] 이미지 대비 전처리 (선택 사항)...")
     img_before, img_after_aligned = preprocess_images(img_before, img_after_aligned)
     
-    # ── 5. 분석 파라미터 입력 ──
-    print("\n[4/8] 분석 파라미터 설정 (Enter 입력 시 기본값 사용)")
+    # ── 6. 분석 파라미터 입력 ──
+    print("\n[5/8] 분석 파라미터 설정 (Enter 입력 시 기본값 사용)")
     def get_input(prompt, default_val):
         user_val = input(f"  > {prompt} (기본값 {default_val}): ").strip()
         if not user_val:
@@ -107,17 +119,6 @@ def main():
     min_a = get_input("최소 마크 면적", 20)
     overlap_th = get_input("겹침 허용 비율 (0~1.0)", 0.8)
     guard_percentage = get_input("가드 존 백분율 (%)", 80.0)
-    
-    # ── 6. ROI 검출 ──
-    print("\n[5/8] 사각형 영역(ROI) 검출...")
-    rois = find_top_rectangles(img_after_for_roi, n=2)
-    if not rois or len(rois) < 2:
-        print("  [!] 2개의 사각형을 자동으로 찾지 못했습니다. 수동 선택을 실행합니다.")
-        rois = select_multiple_rectangles_manually(img_after_for_roi, n=2)
-    
-    if not rois or len(rois) < 2:
-        print("[에러] ROI가 정상적으로 설정되지 않았습니다.")
-        return
 
     # ── 7. 인터랙티브 프롬프트 설정 ──
     print("\n[6/8] 인터랙티브 세그멘테이션 설정 (배경/마크 학습)...")

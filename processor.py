@@ -179,29 +179,32 @@ class ChangeAnalyzer:
         return [new_masks[idx] for idx in new_mark_indices]
 
     def get_difference_candidates(self, img_before, img_after):
-        """이미지 차분을 통해 변화가 발생한 후보 영역의 중심점들을 추출함"""
-        # 그레이스케일 변환
-        if len(img_before.shape) == 3:
-            gray_before = cv2.cvtColor(img_before, cv2.COLOR_BGR2GRAY)
-            gray_after = cv2.cvtColor(img_after, cv2.COLOR_BGR2GRAY)
-        else:
-            gray_before = img_before
-            gray_after = img_after
-            
-        # 노이즈 억제를 위해 약간의 블러링
-        gray_before = cv2.GaussianBlur(gray_before, (5, 5), 0)
-        gray_after = cv2.GaussianBlur(gray_after, (5, 5), 0)
+        """이미지 차분을 통해 변화가 발생한 후보 영역의 중심점들을 추출함 (CIELAB 색상 분석 적용)"""
+        # 1. 색상 공간 변환 (CIELAB는 인간의 시각적 차이를 가장 잘 반영함)
+        before_lab = cv2.cvtColor(img_before, cv2.COLOR_BGR2Lab)
+        after_lab = cv2.cvtColor(img_after, cv2.COLOR_BGR2Lab)
         
-        # 차분 계산
-        diff = cv2.absdiff(gray_before, gray_after)
-        _, thresh = cv2.threshold(diff, self.diff_threshold, 255, cv2.THRESH_BINARY)
+        # 2. Lab 각 채널별 차이 계산
+        diff_lab = cv2.absdiff(before_lab, after_lab)
         
-        # 모폴로지 연산으로 작은 노이즈 제거 및 인접 영역 병합
+        # 3. 유클리드 거리 근사 (L, a, b 차이의 가중 합산)
+        # 밝기(L) 차이뿐만 아니라 색상(a, b) 차이를 충분히 반영
+        l, a, b = cv2.split(diff_lab)
+        
+        # 각 채널의 기여도를 고려하여 통합된 델타 맵 생성
+        # a, b 채널은 미세한 색상 변화를 잡기 위해 가중치를 높임
+        diff_total = cv2.addWeighted(l, 0.5, a, 0.25, 0)
+        diff_total = cv2.addWeighted(diff_total, 1.0, b, 0.25, 0)
+        
+        # 4. 적응형 임계값 또는 사용자 설정 임계값 적용
+        _, thresh = cv2.threshold(diff_total, self.diff_threshold, 255, cv2.THRESH_BINARY)
+        
+        # 5. 모폴로지 연산으로 작은 노이즈 제거 및 인접 영역 병합
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         
-        # 레이블링을 통해 후보 영역 추출
+        # 6. 레이블링을 통해 후보 영역 추출
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh)
         
         candidates = []
