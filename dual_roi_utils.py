@@ -4,10 +4,9 @@ import matplotlib.pyplot as plt
 import json
 import os
 
-def find_top_rectangles(image, n=2):
-    """이미지를 좌우로 나누어 패드만 정확하게 검출 (8점 검증 및 수축 보정 추가)"""
+def find_top_rectangles(image, n=2, direction="horizontal"):
+    """이미지를 좌우 또는 상하로 나누어 패드만 정확하게 검출 (8점 검증 및 수축 보정 추가)"""
     h, w = image.shape[:2]
-    mid_x = w // 2
     
     def refine_roi_by_pixels(img_half, rect_pts):
         x, y, bw, bh = cv2.boundingRect(rect_pts)
@@ -29,31 +28,88 @@ def find_top_rectangles(image, n=2):
     def find_single_pad(img_half):
         gray = cv2.cvtColor(img_half, cv2.COLOR_BGR2GRAY) if len(img_half.shape)==3 else img_half
         h_half, w_half = gray.shape[:2]
-        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        
+        # 1차 노이즈 제거
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Otsu 이진화 적용
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        if np.mean(thresh[h_half//3:2*h_half//3, w_half//3:2*w_half//3]) < 127: thresh = cv2.bitwise_not(thresh)
-        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+        
+        # 배경/패드 색상 반전 여부 자동 판단 개선
+        total_mean = np.mean(thresh)
+        center_mean = np.mean(thresh[h_half//4 : 3*h_half//4, w_half//4 : 3*w_half//4])
+        if center_mean < total_mean:
+            thresh = cv2.bitwise_not(thresh)
+            
+        # 노이즈를 닫고 연결하기 위한 모폴로지 닫기/열기 연산
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        opening = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        opening = cv2.morphologyEx(opening, cv2.MORPH_OPEN, kernel)
+        
         contours, _ = cv2.findContours(opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
+        
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < (h_half * w_half * 0.04): continue
+            # 패드가 작게 생성되거나 짤려도 잡히도록 최소 면적 필터 완화 (4% -> 2%)
+            if area < (h_half * w_half * 0.02): 
+                continue
             x, y, bw, bh = cv2.boundingRect(cnt)
-            if bw > w_half * 0.96 or bh > h_half * 0.96: continue
-            if (area/(bw*bh)) > 0.75:
+            # 외곽 테두리를 패드로 잡지 않기 위한 한계치 완화 (96% -> 98%)
+            if bw > w_half * 0.98 or bh > h_half * 0.98: 
+                continue
+                
+            # 사각형도(Rectangularity) 필터 완화 (0.75 -> 0.55): 모서리가 둥글거나 다각형 형태도 잡음
+            rectangularity = area / (bw * bh) if (bw > 0 and bh > 0) else 0.0
+            if rectangularity > 0.55:
+                # 중심 근처에 있을수록 가중 점수 부여
                 score = area * (1.0 - abs((x + bw/2) - w_half/2) / w_half)
                 candidates.append((score, cnt))
-        if not candidates: return None
+                
+        # [백업 대비책] 만약 이진화 및 모폴로지로 패드가 완전히 분리가 안 되었을 때 Canny 에지 검출로 재시도
+        if not candidates:
+            edges = cv2.Canny(gray, 30, 100)
+            edges_dilated = cv2.dilate(edges, np.ones((5, 5), np.uint8), iterations=1)
+            contours_backup, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours_backup:
+                area = cv2.contourArea(cnt)
+                if area < (h_half * w_half * 0.02): 
+                    continue
+                x, y, bw, bh = cv2.boundingRect(cnt)
+                if bw > w_half * 0.98 or bh > h_half * 0.98: 
+                    continue
+                rectangularity = area / (bw * bh) if (bw > 0 and bh > 0) else 0.0
+                if rectangularity > 0.55:
+                    score = area * (1.0 - abs((x + bw/2) - w_half/2) / w_half)
+                    candidates.append((score, cnt))
+                    
+        if not candidates: 
+            return None
+            
         candidates.sort(key=lambda x: x[0], reverse=True)
         x, y, bw, bh = cv2.boundingRect(candidates[0][1])
         return refine_roi_by_pixels(img_half, np.array([[[x, y]], [[x+bw, y]], [[x+bw, y+bh]], [[x, y+bh]]], dtype=np.int32))
 
     results = []
-    l = find_single_pad(image[:, :mid_x])
-    if l is not None: results.append(l)
-    r = find_single_pad(image[:, mid_x:])
-    if r is not None:
-        r_shifted = r.copy(); r_shifted[:, 0, 0] += mid_x; results.append(r_shifted)
+    if direction == "vertical":
+        mid_y = h // 2
+        # 위쪽 패드 검출
+        t = find_single_pad(image[:mid_y, :])
+        if t is not None: results.append(t)
+        # 아래쪽 패드 검출 및 y좌표 보정
+        b = find_single_pad(image[mid_y:, :])
+        if b is not None:
+            b_shifted = b.copy(); b_shifted[:, 0, 1] += mid_y; results.append(b_shifted)
+    else:
+        mid_x = w // 2
+        # 왼쪽 패드 검출
+        l = find_single_pad(image[:, :mid_x])
+        if l is not None: results.append(l)
+        # 오른쪽 패드 검출 및 x좌표 보정
+        r = find_single_pad(image[:, mid_x:])
+        if r is not None:
+            r_shifted = r.copy(); r_shifted[:, 0, 0] += mid_x; results.append(r_shifted)
+            
     return results
 
 def calculate_sub_rectangle(rect, length_percentage):
@@ -76,10 +132,56 @@ def check_guard_zone(marks, sub_rect):
     for m in marks:
         c = np.argwhere(m['segmentation'])
         if c.size == 0: continue
-        if np.any(c[:, 0] < y1) or np.any(c[:, 0] > y2) or np.any(c[:, 1] < x1) or np.any(c[:, 1] > x2): return False
+        # 마크의 중심점이 가드존 내부에 있는지 판단 (너무 엄격한 1픽셀 아웃을 방지)
+        cy, cx = np.mean(c, axis=0)
+        if not (y1 <= cy <= y2 and x1 <= cx <= x2):
+            return False
     return True
 
+def show_manual_roi_guide_plot(image):
+    """수동 ROI 지정 방법을 사용자에게 한글 가이드 다이얼로그로 먼저 보여주는 예시 창"""
+    import matplotlib.pyplot as plt
+    import koreanize_matplotlib
+    
+    fig, ax = plt.subplots(figsize=(9, 6.5))
+    ax.set_title("[가이드] 수동 ROI 패드 꼭짓점 지정 예시\n(반드시 그림의 1 -> 2 -> 3 -> 4 순서대로 꼭짓점 4곳을 클릭해 주세요!)", 
+                 fontsize=13, fontweight='bold', color='navy')
+    
+    # 원본 이미지 출력
+    ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    
+    # 예시 사각형 좌표 시각화 (이미지 중심의 15% 크기 수준 가상 예시)
+    h, w = image.shape[:2]
+    ex_x, ex_y, ex_w, ex_h = int(w * 0.15), int(h * 0.25), int(w * 0.20), int(h * 0.45)
+    pts = [
+        (ex_x, ex_y),          # 1: 좌상
+        (ex_x + ex_w, ex_y),   # 2: 우상
+        (ex_x + ex_w, ex_y + ex_h), # 3: 우하
+        (ex_x, ex_y + ex_h)    # 4: 좌하
+    ]
+    
+    # 예시 다각형 박스 덧그리기
+    import matplotlib.patches as patches
+    rect_patch = patches.Rectangle((ex_x, ex_y), ex_w, ex_h, linewidth=3, edgecolor='red', facecolor='none', linestyle='-')
+    ax.add_patch(rect_patch)
+    
+    # 순서 숫자 1, 2, 3, 4 마커 드로잉
+    for idx, (px, py) in enumerate(pts):
+        ax.plot(px, py, 'ro', markersize=12)
+        ax.text(px, py - 18, f"클릭 {idx+1}", color='yellow', fontsize=10, fontweight='bold', 
+                ha='center', bbox=dict(facecolor='black', alpha=0.7, boxstyle='round,pad=0.2'))
+        
+    ax.text(w // 2, h - 25, "💡 예시를 확인하신 후, 이 창을 닫으면 실제 마우스 클릭 창이 활성화됩니다.", 
+            color='darkred', fontsize=11, fontweight='bold', ha='center', bbox=dict(facecolor='yellow', alpha=0.9, pad=4))
+            
+    ax.axis('off')
+    plt.tight_layout()
+    plt.show()
+
 def select_multiple_rectangles_manually(image, n=2):
+    # 수동 클릭 창을 구동하기 전에 가이드 예시 플롯 노출
+    show_manual_roi_guide_plot(image)
+    
     all_rects = []
     for i in range(n):
         clone = image.copy(); pts = []

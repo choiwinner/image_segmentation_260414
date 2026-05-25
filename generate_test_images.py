@@ -12,13 +12,29 @@ def generate_test_images():
     base = cv2.add(base, noise)
     
     # 2. 2개의 ROI 사각형 (Pads) 생성
-    # ROI 1 (Left)
-    cv2.rectangle(base, (100, 150), (350, 450), (220, 220, 220), -1) # Border (더 밝게)
-    cv2.rectangle(base, (110, 160), (340, 440), (150, 150, 150), -1) # Internal Area
-    
-    # ROI 2 (Right)
-    cv2.rectangle(base, (550, 150), (800, 450), (220, 220, 220), -1) # Border (더 밝게)
-    cv2.rectangle(base, (560, 160), (790, 440), (150, 150, 150), -1) # Internal Area
+    def draw_pad_with_pattern(img, rect_outer, rect_inner):
+        cv2.rectangle(img, rect_outer[0], rect_outer[1], (220, 220, 220), -1)
+        x1, y1 = rect_inner[0]
+        x2, y2 = rect_inner[1]
+        cv2.rectangle(img, (x1, y1), (x2, y2), (150, 150, 150), -1)
+        
+        # Pad 내부에 얼룩 패턴 추가
+        roi_h = y2 - y1
+        roi_w = x2 - x1
+        yy, xx = np.mgrid[0:roi_h, 0:roi_w]
+        stripe_pattern = np.sin((xx + yy) / 5.0) * 10.0
+        spotted_pattern = np.sin(xx / 12.0) * np.sin(yy / 12.0) * 12.0
+        blotchy_pattern = np.sin(xx / 30.0) * np.cos(yy / 30.0) * 8.0
+        total_pattern = stripe_pattern + spotted_pattern + blotchy_pattern
+        
+        roi_area = img[y1:y2, x1:x2].astype(np.int16)
+        for c in range(3):
+            roi_area[:, :, c] = np.clip(roi_area[:, :, c] + total_pattern, 0, 255)
+        img[y1:y2, x1:x2] = roi_area.astype(np.uint8)
+
+    draw_pad_with_pattern(base, ((100, 150), (350, 450)), ((110, 160), (340, 440)))
+    draw_pad_with_pattern(base, ((550, 150), (800, 450)), ((560, 160), (790, 440)))
+
     
     # 3. before.jpg 생성 (기존 마크)
     img_before = base.copy()

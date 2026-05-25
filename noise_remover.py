@@ -209,12 +209,12 @@ def ask_user_noise_removal(img_before, img_after, rois=None):
         
         if choice == 'y':
             print(f"  [적용] 노이즈 제거 완료. (B: {count_b}, A: {count_a})")
-            return processed_before, processed_after
+            return processed_before, processed_after, threshold, sensitivity
         elif choice == 'n':
             print("  [알림] 노이즈 제거를 적용하지 않습니다.")
-            return img_before, img_after
+            return img_before, img_after, 0, 0
         elif choice == 'r':
             continue
         else:
             print("  [알림] y를 입력한 것으로 간주하여 적용합니다.")
-            return processed_before, processed_after
+            return processed_before, processed_after, threshold, sensitivity

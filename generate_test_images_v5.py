@@ -25,8 +25,36 @@ def generate_test_images():
         # 외곽선은 약간 밝은 색
         cv2.rectangle(img, rect[0], rect[1], (180, 220, 240), -1)
         # 내부는 조금 더 진한 색
-        inner = [(rect[0][0]+10, rect[0][1]+10), (rect[1][0]-10, rect[1][1]-10)]
-        cv2.rectangle(img, inner[0], inner[1], (100, 150, 180), -1)
+        x1, y1 = rect[0][0]+10, rect[0][1]+10
+        x2, y2 = rect[1][0]-10, rect[1][1]-10
+        cv2.rectangle(img, (x1, y1), (x2, y2), (100, 150, 180), -1)
+        
+        # Pad 내부에 얼룩 같은 일정한 패턴 추가
+        roi_h = y2 - y1
+        roi_w = x2 - x1
+        
+        # 주기적인 패턴 생성을 위한 그리드 좌표
+        yy, xx = np.mgrid[0:roi_h, 0:roi_w]
+        
+        # 1) 대각선 줄무늬 패턴 (규칙적인 질감)
+        stripe_pattern = np.sin((xx + yy) / 5.0) * 10.0
+        
+        # 2) 바둑판 모양의 일정한 얼룩 패턴
+        spotted_pattern = np.sin(xx / 12.0) * np.sin(yy / 12.0) * 12.0
+        
+        # 3) 완만한 큰 물결 얼룩 (불균일한 코팅이나 빛 번짐 모사)
+        blotchy_pattern = np.sin(xx / 30.0) * np.cos(yy / 30.0) * 8.0
+        
+        # 전체 패턴 합성
+        total_pattern = stripe_pattern + spotted_pattern + blotchy_pattern
+        
+        # 3채널 이미지에 패턴 값 가감 적용
+        roi_area = img[y1:y2, x1:x2].astype(np.int16)
+        for c in range(3):
+            roi_area[:, :, c] = np.clip(roi_area[:, :, c] + total_pattern, 0, 255)
+            
+        img[y1:y2, x1:x2] = roi_area.astype(np.uint8)
+
 
     # before 이미지 생성
     img_before = base.copy()
